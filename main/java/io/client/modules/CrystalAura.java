@@ -33,6 +33,9 @@ import java.util.concurrent.ConcurrentHashMap;
 
 public class CrystalAura extends Module {
 
+    private static final double MAX_CRYSTAL_DAMAGE_DISTANCE = 12.0;
+    private static double sq(double v) { return v * v; }
+
     private final CategorySetting targetCategory = new CategorySetting("Target");
     private final RadioSetting targetLogic = new RadioSetting("TargetLogic", "Distance");
     private final NumberSetting targetRange = new NumberSetting("TargetRange", 10.0F, 1.0F, 20.0F);
@@ -87,8 +90,12 @@ public class CrystalAura extends Module {
     private final NumberSetting obbyRange = new NumberSetting("ObbyRange", 4.5F, 0.0F, 6.0F);
     private final NumberSetting obbyDelay = new NumberSetting("ObbyDelay", 2.0F, 0.0F, 20.0F);
     private final BooleanSetting obbyOnlyGround = new BooleanSetting("OnlyOnGround", true);
-    private final Map<BlockPos, Integer> blacklistedPos = new ConcurrentHashMap<>();
+
+    // store expiration tick (world ticks)
+    private final Map<BlockPos, Long> blacklistedPos = new ConcurrentHashMap<>();
+    // store attack tick per crystal id
     private final Map<Integer, Long> attackedCrystals = new ConcurrentHashMap<>();
+
     private LivingEntity target;
     private BlockPos bestPlacePos;
     private EndCrystal bestCrystal;
@@ -188,12 +195,17 @@ public class CrystalAura extends Module {
         breakTimer = Math.max(0, breakTimer - 1);
         obbyTimer = Math.max(0, obbyTimer - 1);
 
-        blacklistedPos.entrySet().removeIf(e -> {
-            int ticks = e.getValue() - 1;
-            if (ticks <= 0) return true;
-            blacklistedPos.put(e.getKey(), ticks);
-            return false;
-        });
+        long worldTick = mc.level.getGameTime();
+
+        // cleanup blacklisted positions by expiration tick
+        if (!blacklistedPos.isEmpty()) {
+            blacklistedPos.entrySet().removeIf(e -> e.getValue() <= worldTick);
+        }
+
+        // cleanup old attacked entries (keep only last ~20 ticks)
+        if (!attackedCrystals.isEmpty()) {
+            attackedCrystals.entrySet().removeIf(e -> (worldTick - e.getValue()) > 20L);
+        }
 
         if (shouldPause(mc)) {
             switchBack(mc);
@@ -257,6 +269,7 @@ public class CrystalAura extends Module {
     private LivingEntity findTarget(Minecraft mc) {
         LivingEntity best = null;
         double bestValue = Double.MAX_VALUE;
+        double maxRangeSq = sq(targetRange.getValue());
 
         for (Entity e : mc.level.entitiesForRendering()) {
             if (!(e instanceof LivingEntity living)) continue;
@@ -265,11 +278,10 @@ public class CrystalAura extends Module {
             if (e instanceof EndCrystal || e instanceof ItemEntity) continue;
             if (!TargetManager.INSTANCE.isValidTarget(e)) continue;
 
-            double dist = mc.player.distanceToSqr(e);
-            if (dist > targetRange.getValue() * targetRange.getValue()) continue;
+            double distSq = mc.player.distanceToSqr(e);
+            if (distSq > maxRangeSq) continue;
 
-            double value = targetLogic.getSelectedOption().equals("Distance")
-                    ? dist : living.getHealth();
+            double value = targetLogic.getSelectedOption().equals("Distance") ? distSq : living.getHealth();
 
             if (value < bestValue) {
                 bestValue = value;
@@ -285,6 +297,11 @@ public class CrystalAura extends Module {
         double bestDamage = 0;
 
         if (!doBreak.isEnabled()) return;
+        if (target == null) return;
+
+        double maxBreakRange = breakRange.getValue();
+        double maxWallRangeSq = sq(breakWallsRange.getValue());
+        long worldTick = mc.level.getGameTime();
 
         for (Entity e : mc.level.entitiesForRendering()) {
             if (!(e instanceof EndCrystal crystal)) continue;
@@ -292,15 +309,16 @@ public class CrystalAura extends Module {
             if (crystalAge.getValue() > 0 && crystal.tickCount < crystalAge.getValue()) continue;
 
             if (inhibit.isEnabled() && attackedCrystals.containsKey(crystal.getId())) {
-                long timeSinceAttack = System.currentTimeMillis() - attackedCrystals.get(crystal.getId());
-                if (timeSinceAttack < 500) continue;
+                long timeSinceAttackTicks = worldTick - attackedCrystals.get(crystal.getId());
+                // previously ~500ms; ~10 ticks at 50ms/tick
+                if (timeSinceAttackTicks < 10L) continue;
             }
 
             double dist = mc.player.getEyePosition().distanceTo(crystal.position());
-            if (dist > breakRange.getValue()) continue;
+            if (dist > maxBreakRange) continue;
 
             boolean canSee = canSeeCrystal(mc, crystal);
-            if (!canSee && dist > breakWallsRange.getValue()) continue;
+            if (!canSee && sq(dist) > maxWallRangeSq) continue;
 
             double targetDmg = calculateDamage(crystal.position(), target);
             double selfDmg = calculateDamage(crystal.position(), mc.player);
@@ -318,16 +336,20 @@ public class CrystalAura extends Module {
         bestObbyPos = null;
         double bestScore = 0;
 
+        if (target == null) return;
+
         BlockPos targetPos = target.blockPosition();
         int range = (int) Math.ceil(obbyRange.getValue());
+        double maxRangeSq = sq(obbyRange.getValue());
+        int verticalRange = 2;
 
         for (int x = -range; x <= range; x++) {
-            for (int y = -2; y <= 2; y++) {
+            for (int y = -verticalRange; y <= verticalRange; y++) {
                 for (int z = -range; z <= range; z++) {
                     BlockPos pos = targetPos.offset(x, y, z);
 
-                    double dist = Math.sqrt(mc.player.blockPosition().distSqr(pos));
-                    if (dist > obbyRange.getValue() * obbyRange.getValue()) continue;
+                    double distSq = mc.player.blockPosition().distSqr(pos);
+                    if (distSq > maxRangeSq) continue;
 
                     if (!canPlaceObby(mc, pos)) continue;
 
@@ -347,14 +369,13 @@ public class CrystalAura extends Module {
     }
 
     private double scoreObbyPosition(Minecraft mc, BlockPos obbyPos) {
-        double score = 0;
+        if (target == null) return 0;
 
         BlockPos crystalPos = obbyPos.above();
-
         Vec3 crystalVec = Vec3.atCenterOf(crystalPos).add(0, 1, 0);
 
-        double dist = mc.player.getEyePosition().distanceTo(crystalVec);
-        if (dist > placeRange.getValue()) return 0;
+        double distToPlayer = mc.player.getEyePosition().distanceTo(crystalVec);
+        if (distToPlayer > placeRange.getValue()) return 0;
 
         if (!mc.level.getBlockState(crystalPos).isAir()) return 0;
         if (!mc.level.getBlockState(crystalPos.above()).isAir() && !oldPlace.isEnabled()) return 0;
@@ -364,7 +385,7 @@ public class CrystalAura extends Module {
 
         if (!isDamageSafe(targetDmg, selfDmg, mc.player)) return 0;
 
-        score = targetDmg;
+        double score = targetDmg;
 
         double targetDist = Math.sqrt(target.blockPosition().distSqr(obbyPos));
         score += (10.0 - Math.min(10.0, targetDist)) * 0.5;
@@ -374,7 +395,6 @@ public class CrystalAura extends Module {
 
     private boolean canPlaceObby(Minecraft mc, BlockPos pos) {
         if (!mc.level.getBlockState(pos).canBeReplaced()) return false;
-
         if (!mc.level.getBlockState(pos.below()).isSolid()) return false;
 
         AABB box = new AABB(pos);
@@ -410,9 +430,7 @@ public class CrystalAura extends Module {
 
         if (rotate.isEnabled()) {
             Vec3 vec = Vec3.atCenterOf(bestObbyPos);
-            float[] rots = calculateRotation(mc.player.getEyePosition(), vec);
-            mc.player.setYRot(rots[0]);
-            mc.player.setXRot(rots[1]);
+            applyRotation(mc, vec);
         }
 
         InteractionHand hand = offhand ? InteractionHand.OFF_HAND : InteractionHand.MAIN_HAND;
@@ -443,13 +461,18 @@ public class CrystalAura extends Module {
         double bestDamage = 0;
 
         if (!doPlace.isEnabled()) return;
+        if (target == null) return;
 
         BlockPos playerPos = mc.player.blockPosition();
-        int range = (int) Math.ceil(placeRange.getValue());
+        int horizontalRange = (int) Math.ceil(placeRange.getValue());
+        int verticalRange = 2;
 
-        for (int x = -range; x <= range; x++) {
-            for (int y = -range; y <= range; y++) {
-                for (int z = -range; z <= range; z++) {
+        double placeRangeVal = placeRange.getValue();
+        double placeWallsRangeVal = placeWallsRange.getValue();
+
+        for (int x = -horizontalRange; x <= horizontalRange; x++) {
+            for (int y = -verticalRange; y <= verticalRange; y++) {
+                for (int z = -horizontalRange; z <= horizontalRange; z++) {
                     BlockPos pos = playerPos.offset(x, y, z);
 
                     if (blacklist.isEnabled() && blacklistedPos.containsKey(pos)) continue;
@@ -459,10 +482,10 @@ public class CrystalAura extends Module {
                     Vec3 crystalVec = Vec3.atCenterOf(pos).add(0, 1, 0);
                     double dist = mc.player.getEyePosition().distanceTo(crystalVec);
 
-                    if (dist > placeRange.getValue()) continue;
+                    if (dist > placeRangeVal) continue;
 
                     boolean canSee = !isLineBlocked(mc, mc.player.getEyePosition(), crystalVec);
-                    if (!canSee && dist > placeWallsRange.getValue()) continue;
+                    if (!canSee && dist > placeWallsRangeVal) continue;
 
                     if (raycast.isEnabled() && !canSee) continue;
 
@@ -481,6 +504,8 @@ public class CrystalAura extends Module {
     }
 
     private boolean isDamageSafe(double targetDmg, double selfDmg, Player player) {
+        if (target == null) return false;
+
         if (shouldFacePlace(target)) {
             if (targetDmg < 1.0) return false;
         } else {
@@ -503,10 +528,8 @@ public class CrystalAura extends Module {
     }
 
     private boolean shouldFacePlace(LivingEntity target) {
-        if (target.getHealth() + target.getAbsorptionAmount() <= facePlaceHP.getValue()) {
-            return true;
-        }
-        return false;
+        if (target == null) return false;
+        return target.getHealth() + target.getAbsorptionAmount() <= facePlaceHP.getValue();
     }
 
     private void breakCrystal(Minecraft mc) {
@@ -517,15 +540,14 @@ public class CrystalAura extends Module {
 
         if (rotate.isEnabled()) {
             Vec3 vec = bestCrystal.position().add(0, bestCrystal.getBbHeight() / 2, 0);
-            float[] rots = calculateRotation(mc.player.getEyePosition(), vec);
-            mc.player.setYRot(rots[0]);
-            mc.player.setXRot(rots[1]);
+            applyRotation(mc, vec);
         }
 
         mc.gameMode.attack(mc.player, bestCrystal);
         mc.player.swing(InteractionHand.MAIN_HAND);
 
-        attackedCrystals.put(bestCrystal.getId(), System.currentTimeMillis());
+        // store current world tick for this attacked crystal
+        attackedCrystals.put(bestCrystal.getId(), mc.level.getGameTime());
         breakTimer = (int) breakDelay.getValue();
 
         if (switched) {
@@ -562,9 +584,7 @@ public class CrystalAura extends Module {
 
         if (rotate.isEnabled()) {
             Vec3 vec = getPlaceVec(bestPlacePos);
-            float[] rots = calculateRotation(mc.player.getEyePosition(), vec);
-            mc.player.setYRot(rots[0]);
-            mc.player.setXRot(rots[1]);
+            applyRotation(mc, vec);
         }
 
         InteractionHand hand = offhand ? InteractionHand.OFF_HAND : InteractionHand.MAIN_HAND;
@@ -577,7 +597,8 @@ public class CrystalAura extends Module {
         placeTimer = (int) placeDelay.getValue();
 
         if (blacklist.isEnabled()) {
-            blacklistedPos.put(bestPlacePos, 4);
+            long expiration = mc.level.getGameTime() + 4L;
+            blacklistedPos.put(bestPlacePos, expiration);
         }
     }
 
@@ -673,10 +694,12 @@ public class CrystalAura extends Module {
     }
 
     private double calculateDamage(Vec3 crystalPos, LivingEntity target) {
-        double distance = target.position().distanceTo(crystalPos);
-        if (distance > 12.0) return 0.0;
+        if (target == null) return 0.0;
 
-        double exposure = 1.0 - (distance / 12.0);
+        double distance = target.position().distanceTo(crystalPos);
+        if (distance > MAX_CRYSTAL_DAMAGE_DISTANCE) return 0.0;
+
+        double exposure = 1.0 - (distance / MAX_CRYSTAL_DAMAGE_DISTANCE);
         double impact = exposure * 2.0;
         double rawDamage = Math.floor(impact * 49.0 + 1.0);
 
@@ -684,6 +707,13 @@ public class CrystalAura extends Module {
         float finalDamage = (float) (rawDamage * (1.0f - armor));
 
         return Math.max(0.5, finalDamage);
+    }
+
+    private void applyRotation(Minecraft mc, Vec3 to) {
+        Vec3 from = mc.player.getEyePosition();
+        float[] rots = calculateRotation(from, to);
+        mc.player.setYRot(rots[0]);
+        mc.player.setXRot(rots[1]);
     }
 
     private float[] calculateRotation(Vec3 from, Vec3 to) {

@@ -1,28 +1,42 @@
 package io.client.mixin;
 
-import io.client.event.BlockEvents;
-import net.minecraft.world.InteractionResult;
-import net.minecraft.world.entity.Entity;
-import net.minecraft.world.entity.player.Player;
+import io.client.modules.ExtraItemInfo;
+import net.minecraft.ChatFormatting;
+import net.minecraft.network.chat.Component;
 import net.minecraft.world.item.ItemStack;
-import net.minecraft.world.item.context.UseOnContext;
-import net.minecraft.world.level.block.state.BlockState;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
+import java.util.List;
+
 @Mixin(ItemStack.class)
 public abstract class ItemStackMixin {
-    @Inject(method = "useOn(Lnet/minecraft/world/item/context/UseOnContext;)Lnet/minecraft/world/InteractionResult;", at = @At("TAIL"), cancellable = true)
-    public void useOn(UseOnContext context, CallbackInfoReturnable<InteractionResult> cir) {
-        Player player = context.getPlayer();
-        ItemStack copy = context.getItemInHand().copy();
-        BlockState placedAgainst = player.level().getBlockState(context.getClickedPos().relative(context.getClickedFace()));
-        if (!player.level().isEmptyBlock(context.getClickedPos().relative(context.getClickedFace()))) {
-            boolean result = BlockEvents.BLOCK_MULTIPLACE.invoker().onMultiplaced(context.getClickedPos().relative(context.getClickedFace()), (Entity) player, placedAgainst, player.level().getBlockState(context.getClickedPos()));
-            if (!result)
-                cir.setReturnValue(InteractionResult.FAIL);
+
+    @Inject(
+            method = "getTooltipLines",
+            at = @At("RETURN")
+    )
+    private void onGetTooltipLines(CallbackInfoReturnable<List<Component>> cir) {
+        ExtraItemInfo module = ExtraItemInfo.getInstance();
+
+        if (module != null && module.isEnabled()) {
+            ItemStack stack = (ItemStack) (Object) this;
+            if (!stack.isEmpty()) {
+                int size = module.getCachedSize(stack);
+                ChatFormatting color = module.isOversized(size) ? ChatFormatting.RED : ChatFormatting.GRAY;
+                String sizeText = formatSize(size);
+
+                cir.getReturnValue().add(Component.literal(sizeText).withStyle(color));
+            }
         }
+    }
+
+    private static String formatSize(int bytes) {
+        if (bytes < 1024) return "Size: " + bytes + " Bytes";
+        if (bytes < 1024 * 1024) return "Size: " + String.format("%.1fkB", bytes / 1024f);
+        if (bytes < 1024 * 1024 * 1024) return "Size: " + String.format("%.1fMB", bytes / (1024f * 1024f));
+        return "Size: " + String.format("%.1fGB", bytes / (1024f * 1024f * 1024f));
     }
 }

@@ -19,6 +19,7 @@ public class IoSwag extends Module {
         suffix.addOption(":3");
         suffix.addOption(":D");
         suffix.addOption("˚⟡˖ ࣪");
+        suffix.addOption("<WK> ");
         addSetting(suffix);
         addSetting(greentext);
 

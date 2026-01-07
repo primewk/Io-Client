@@ -134,6 +134,9 @@ public class ESP extends Module {
         Matrix4f mvp = new Matrix4f(projection);
         mvp.mul(modelView);
 
+        int renderDist = mc.options.renderDistance().get();
+        double maxRange = renderDist * 16;
+
         for (Entity e : mc.level.entitiesForRendering()) {
             if (!(e instanceof LivingEntity living)) continue;
             if (e == mc.player) continue;
@@ -144,7 +147,7 @@ public class ESP extends Module {
             }
 
             double dist = mc.player.distanceTo(e);
-            if (dist > 64.0) continue;
+            if (dist > maxRange) continue;
 
             double x = e.xo + (e.getX() - e.xo) * partialTicks - camPos.x;
             double y = e.yo + (e.getY() - e.yo) * partialTicks + e.getBbHeight() + 0.2 - camPos.y;

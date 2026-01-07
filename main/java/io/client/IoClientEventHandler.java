@@ -113,6 +113,7 @@ public class IoClientEventHandler {
         }
 
 
+
         if (mc.screen instanceof ChatScreen chat) {
             if (chat.getFocused() instanceof EditBox editBox) {
                 if (isPressed(window, GLFW.GLFW_KEY_TAB)) {

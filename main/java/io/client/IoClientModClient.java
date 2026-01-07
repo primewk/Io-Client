@@ -10,6 +10,7 @@ public class IoClientModClient implements ClientModInitializer {
     public void onInitializeClient() {
         ModuleManager.INSTANCE.init();
         IoClientEventHandler.getInstance().registerEvents();
+
     }
 
 }

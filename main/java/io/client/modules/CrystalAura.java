@@ -90,10 +90,11 @@ public class CrystalAura extends Module {
     private final NumberSetting obbyRange = new NumberSetting("ObbyRange", 4.5F, 0.0F, 6.0F);
     private final NumberSetting obbyDelay = new NumberSetting("ObbyDelay", 2.0F, 0.0F, 20.0F);
     private final BooleanSetting obbyOnlyGround = new BooleanSetting("OnlyOnGround", true);
+    private final BooleanSetting obbySmartPlace = new BooleanSetting("SmartPlace", true); // wont place if obsidian is placed nearby already
+    private final NumberSetting obbyMinDamage = new NumberSetting("MinimumEstDMG", 2.0F, 0.0F, 20.0F); // minimum estimated damage from the placed obsidian for the crystal
+    private final NumberSetting obbyDistanceRatio = new NumberSetting("PTTratio", 1.0F, 0.1F, 5.0F); // player to target distance ratio for placement
 
-    // store expiration tick (world ticks)
     private final Map<BlockPos, Long> blacklistedPos = new ConcurrentHashMap<>();
-    // store attack tick per crystal id
     private final Map<Integer, Long> attackedCrystals = new ConcurrentHashMap<>();
 
     private LivingEntity target;
@@ -184,6 +185,9 @@ public class CrystalAura extends Module {
         autoObbyCat.addSetting(obbyRange);
         autoObbyCat.addSetting(obbyDelay);
         autoObbyCat.addSetting(obbyOnlyGround);
+        autoObbyCat.addSetting(obbySmartPlace);
+        autoObbyCat.addSetting(obbyMinDamage);
+        autoObbyCat.addSetting(obbyDistanceRatio);
     }
 
     @Override
@@ -197,12 +201,10 @@ public class CrystalAura extends Module {
 
         long worldTick = mc.level.getGameTime();
 
-        // cleanup blacklisted positions by expiration tick
         if (!blacklistedPos.isEmpty()) {
             blacklistedPos.entrySet().removeIf(e -> e.getValue() <= worldTick);
         }
 
-        // cleanup old attacked entries (keep only last ~20 ticks)
         if (!attackedCrystals.isEmpty()) {
             attackedCrystals.entrySet().removeIf(e -> (worldTick - e.getValue()) > 20L);
         }
@@ -310,7 +312,6 @@ public class CrystalAura extends Module {
 
             if (inhibit.isEnabled() && attackedCrystals.containsKey(crystal.getId())) {
                 long timeSinceAttackTicks = worldTick - attackedCrystals.get(crystal.getId());
-                // previously ~500ms; ~10 ticks at 50ms/tick
                 if (timeSinceAttackTicks < 10L) continue;
             }
 
@@ -357,6 +358,8 @@ public class CrystalAura extends Module {
                         if (!mc.level.getBlockState(pos.below()).isSolid()) continue;
                     }
 
+                    if (obbySmartPlace.isEnabled() && hasObbyNearby(mc, pos)) continue;
+
                     double score = scoreObbyPosition(mc, pos);
 
                     if (score > bestScore) {
@@ -366,6 +369,20 @@ public class CrystalAura extends Module {
                 }
             }
         }
+    }
+
+    private boolean hasObbyNearby(Minecraft mc, BlockPos pos) {
+        for (int x = -1; x <= 1; x++) {
+            for (int z = -1; z <= 1; z++) {
+                if (x == 0 && z == 0) continue;
+                BlockPos checkPos = pos.offset(x, 0, z);
+                if (mc.level.getBlockState(checkPos).is(Blocks.OBSIDIAN) ||
+                        mc.level.getBlockState(checkPos).is(Blocks.BEDROCK)) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     private double scoreObbyPosition(Minecraft mc, BlockPos obbyPos) {
@@ -383,18 +400,29 @@ public class CrystalAura extends Module {
         double targetDmg = calculateDamage(crystalVec, target);
         double selfDmg = calculateDamage(crystalVec, mc.player);
 
+        if (obbySmartPlace.isEnabled()) {
+            if (targetDmg < obbyMinDamage.getValue()) return 0;
+        }
+
         if (!isDamageSafe(targetDmg, selfDmg, mc.player)) return 0;
 
         double score = targetDmg;
 
         double targetDist = Math.sqrt(target.blockPosition().distSqr(obbyPos));
-        score += (10.0 - Math.min(10.0, targetDist)) * 0.5;
+        double playerDist = Math.sqrt(mc.player.blockPosition().distSqr(obbyPos));
+
+        double ratio = obbyDistanceRatio.getValue();
+        score -= (targetDist * 0.5);
+        score -= (playerDist * 0.5 * ratio);
 
         return score;
     }
 
     private boolean canPlaceObby(Minecraft mc, BlockPos pos) {
         if (!mc.level.getBlockState(pos).canBeReplaced()) return false;
+
+        if (mc.level.getBlockState(pos.below()).is(Blocks.OBSIDIAN)) return false;
+        if (mc.level.getBlockState(pos.below()).is(Blocks.BEDROCK)) return false;
         if (!mc.level.getBlockState(pos.below()).isSolid()) return false;
 
         AABB box = new AABB(pos);
@@ -546,7 +574,6 @@ public class CrystalAura extends Module {
         mc.gameMode.attack(mc.player, bestCrystal);
         mc.player.swing(InteractionHand.MAIN_HAND);
 
-        // store current world tick for this attacked crystal
         attackedCrystals.put(bestCrystal.getId(), mc.level.getGameTime());
         breakTimer = (int) breakDelay.getValue();
 

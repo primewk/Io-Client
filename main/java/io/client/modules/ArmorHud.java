@@ -18,9 +18,6 @@ public class ArmorHud extends Module {
     private final BooleanSetting small;
     private final BooleanSetting triColor;
 
-    private final NumberSetting xPos;
-    private final NumberSetting yPos;
-
     private final CategorySetting highColorCategory;
     private final NumberSetting highR;
     private final NumberSetting highG;
@@ -38,34 +35,31 @@ public class ArmorHud extends Module {
 
     public ArmorHud() {
         super("ArmorHud", "Shows armor durability on HUD", -1, Category.RENDER);
-
+        // removed pos settings cause ill just make it a draggable in the clickgui
         percentIcon = new BooleanSetting("Percent Icon", false);
         small = new BooleanSetting("Small", false);
         triColor = new BooleanSetting("Tri Color", false);
-
-        xPos = new NumberSetting("X Position", 0, 0, 1920);
-        yPos = new NumberSetting("Y Position", 0, 0, 1080);
-
+ 
         highColorCategory = new CategorySetting("High Color");
-        highR = new NumberSetting("R", 0, 0, 255);
-        highG = new NumberSetting("G", 255, 0, 255);
-        highB = new NumberSetting("B", 255, 0, 255);
+        highR = new NumberSetting("HighR", 10, 0, 255);
+        highG = new NumberSetting("HighG", 255, 0, 255);
+        highB = new NumberSetting("HighB", 10, 0, 255);
         highColorCategory.addSetting(highR);
         highColorCategory.addSetting(highG);
         highColorCategory.addSetting(highB);
 
         midColorCategory = new CategorySetting("Mid Color");
-        midR = new NumberSetting("R", 0, 0, 255);
-        midG = new NumberSetting("G", 0, 0, 255);
-        midB = new NumberSetting("B", 255, 0, 255);
+        midR = new NumberSetting("MidR", 255, 0, 255);
+        midG = new NumberSetting("MidG", 125, 0, 255);
+        midB = new NumberSetting("MidB", 10, 0, 255);
         midColorCategory.addSetting(midR);
         midColorCategory.addSetting(midG);
         midColorCategory.addSetting(midB);
 
         lowColorCategory = new CategorySetting("Low Color");
-        lowR = new NumberSetting("R", 87, 0, 255);
-        lowG = new NumberSetting("G", 8, 0, 255);
-        lowB = new NumberSetting("B", 97, 0, 255);
+        lowR = new NumberSetting("LowR", 255, 0, 255);
+        lowG = new NumberSetting("LowG", 10, 0, 255);
+        lowB = new NumberSetting("LowB", 10, 0, 255);
         lowColorCategory.addSetting(lowR);
         lowColorCategory.addSetting(lowG);
         lowColorCategory.addSetting(lowB);
@@ -73,8 +67,6 @@ public class ArmorHud extends Module {
         addSetting(percentIcon);
         addSetting(small);
         addSetting(triColor);
-        addSetting(xPos);
-        addSetting(yPos);
         addSetting(highColorCategory);
         addSetting(midColorCategory);
         addSetting(lowColorCategory);
@@ -89,19 +81,14 @@ public class ArmorHud extends Module {
 
         int centerX = width / 2;
         int iteration = 0;
-        int baseY = height - 55 - (mc.player.isEyeInFluid(FluidTags.WATER) ? 10 : 0);
-        int y = (int) yPos.getValue();
-        if (y == 0) y = baseY;
-
+        int y = height - 55 - (mc.player.isEyeInFluid(FluidTags.WATER) ? 10 : 0);
+        
         for (int i = 0; i < 4; i++) {
             ItemStack armor = mc.player.getInventory().getItem(36 + i);
             iteration++;
             if (armor.isEmpty()) continue;
 
-            int baseX = centerX - 90 + (9 - iteration) * 20 + 2;
-            int x = (int) xPos.getValue();
-            if (x == 0) x = baseX;
-            else x = x + ((9 - iteration) * 20);
+            int x = centerX - 90 + (9 - iteration) * 20 + 2;
 
             context.renderItem(armor, x, y);
             context.renderItemDecorations(mc.font, armor, x, y);
@@ -146,13 +133,21 @@ public class ArmorHud extends Module {
         Color highColor = new Color((int) highR.getValue(), (int) highG.getValue(), (int) highB.getValue());
         Color midColor = new Color((int) midR.getValue(), (int) midG.getValue(), (int) midB.getValue());
         Color lowColor = new Color((int) lowR.getValue(), (int) lowG.getValue(), (int) lowB.getValue());
-
-        if (dmg > 66) {
-            float t = Mth.clamp(normalize(dmg, 66, 100), 0, 1);
+        // fixed color blending
+        if (dmg > 75) {
+            float t = Mth.clamp(normalize(dmg, 75, 100), 0, 1);
+            return highColor;
+        } else if (dmg > 66) {
+            float t = Mth.clamp(normalize(dmg, 66, 75), 0, 1);
             return interpolate(t, highColor, midColor);
+        } else if (dmg > 50) {
+            float t = Mth.clamp(normalize(dmg, 66, 50), 0, 1);
+            return midColor;
         } else if (dmg > 33) {
-            float t = Mth.clamp(normalize(dmg, 33, 66), 0, 1);
+            float t = Mth.clamp(normalize(dmg, 33, 50), 0, 1);
             return interpolate(t, midColor, lowColor);
+        } else if (dmg > 25) {
+            return lowColor;
         } else {
             return lowColor;
         }
